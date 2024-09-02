@@ -1,5 +1,11 @@
-# ModTemplate
-Template for new mods
+# SokuDirectXOptimizations for Hisoutensoku
+
+This mod introduces some optimizations about DirectX into Hisoutensoku as follows:
+
+- It makes Soku's rendering parallel with the processing of the game, i.e., rendering will no longer block the main thread of the game. As a result, the possibility of frame drops will be reduced, and even if the rendering inevitably becomes stammering because of performance issues, your game will not be slowed down if your CPU is not too bad. This will improve the gaming experience for those who sometimes get frame drops. Moreover, I also recommend that all players, even those with good hardware, install and enable this mod as insurance.
+- Speeds up texture loading a little.
+- Supports DirectX 9Ex, which may reduce the memory and CPU usage a bit, according to Microsoft. (It is enabled by default, and you can toggle it off by setting `use_d3d9ex=0` in `SokuDirectXOptimizations.ini`. The current version of SokuLobbies will mass up its text rendering with this option enabled.)
+- Supports VSync (Vertical Synchronization). (It is disabled by default, and you can enable it by setting `vsync=0` in `SokuDirectXOptimizations.ini`.)
 
 # Build
 Requires CMake, git and the VisualStudio compiler (MSVC).
