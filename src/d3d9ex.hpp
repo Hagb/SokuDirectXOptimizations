@@ -15,6 +15,8 @@ extern HRESULT __stdcall myD3DXCreateTexture(LPDIRECT3DDEVICE9 pDevice,
                                              LPDIRECT3DTEXTURE9 *ppTexture);
 // extern bool antialias;
 extern bool textureCheckPitch;
+extern bool d3d9exFlipex;
+extern int d3d9exGpuThreadPriority;
 // clang-format off
 /*
 (STDMETHOD_?)\(([A-Za-zz]*, *)?([A-Za-z0-9]+)\)\(([^)]+)\) PURE;

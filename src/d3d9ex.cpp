@@ -32,14 +32,14 @@ HRESULT __stdcall MyIDirect3DDevice9Ex::QueryInterface(REFIID riid,
     // IDirect3DDevice9Ex when pool == D3DPOOL_MANAGED
     return E_NOINTERFACE;
   }
-  std::cout << "Warning: query non d3d9(ex)" << std::endl;
-  std::cout << std::hex << riid.Data1 << ", " << riid.Data2 << ", "
-            << riid.Data3 << ", ";
-  std::cout << "{" << (int)riid.Data4[0] << ", " << (int)riid.Data4[1] << ", "
-            << (int)riid.Data4[2] << ", " << (int)riid.Data4[3] << ", "
-            << (int)riid.Data4[4] << ", " << (int)riid.Data4[5] << ", "
-            << (int)riid.Data4[6] << ", " << (int)riid.Data4[7] << "}"
-            << std::dec << std::endl;
+  // std::cout << "Warning: query non d3d9(ex)" << std::endl;
+  // std::cout << std::hex << riid.Data1 << ", " << riid.Data2 << ", "
+  //           << riid.Data3 << ", ";
+  // std::cout << "{" << (int)riid.Data4[0] << ", " << (int)riid.Data4[1] << ", "
+  //           << (int)riid.Data4[2] << ", " << (int)riid.Data4[3] << ", "
+  //           << (int)riid.Data4[4] << ", " << (int)riid.Data4[5] << ", "
+  //           << (int)riid.Data4[6] << ", " << (int)riid.Data4[7] << "}"
+  //           << std::dec << std::endl;
   return this->wrapped->QueryInterface(riid, ppvObj);
 }
 
@@ -254,13 +254,15 @@ IDirect3D9 *WINAPI Direct3DCreate9_to_EX(UINT version) {
 // };
 // std::vector<D3DDeviceHook> hook_virtual_functions;
 // bool antialias = false;
-
+bool d3d9exFlipex = true;
+int d3d9exGpuThreadPriority = 7;
 static void __fastcall RealSetD3DPresentParamters(HWND hwnd,
                                                   UINT PresentationInterval) {
   std::cout << "Create d3d9ex" << std::endl;
   auto paramters = (D3DPRESENT_PARAMETERS *)0x008a0f68;
   paramters->PresentationInterval = PresentationInterval;
-  paramters->SwapEffect = D3DSWAPEFFECT_FLIPEX;
+  paramters->SwapEffect =
+      d3d9exFlipex ? D3DSWAPEFFECT_FLIPEX : D3DSWAPEFFECT_FLIP;
   paramters->BackBufferCount = 1;
   // paramters->BackBufferFormat = D3DFMT_UNKNOWN;
   auto i = *(IDirect3D9Ex **)0x008a0e2c;
@@ -287,6 +289,7 @@ static void __fastcall RealSetD3DPresentParamters(HWND hwnd,
   *(MyIDirect3DDevice9Ex **)0x008a0e30 =
       MyIDirect3DDevice9Ex::FromIDirect3DDevice9Ex(device);
   device->SetMaximumFrameLatency(1);
+  device->SetGPUThreadPriority(d3d9exGpuThreadPriority);
 }
 
 static void *afterSetD3DPresentParamters = (void *)0x0041508f;

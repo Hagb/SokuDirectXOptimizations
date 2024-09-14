@@ -8,8 +8,9 @@ public:
   const D3DLOCKED_RECT originalRect;
   D3DLOCKED_RECT newRect;
   const D3DSURFACE_DESC decs;
-  uint32_t random[14];
+  uint32_t random[42];
   size_t pixelSize = 0;
+  bool fix = true;
   DebugRect(D3DLOCKED_RECT rect, D3DSURFACE_DESC decs);
   void Cleanup();
   void operator=(const DebugRect &) = delete;

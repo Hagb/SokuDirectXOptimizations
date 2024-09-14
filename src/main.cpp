@@ -1,30 +1,19 @@
-//
-// Created by PinkySmile on 31/10/2020
-//
-#include <mutex>
-#include <shlwapi.h>
-#include <thread>
 #include <windows.h>
-//
-#include "Scenes.hpp"
-#include "Tamper.hpp"
-#include "d3d9.h"
-#include "d3d9types.h"
-#include "detours.h"
-#include "minwinbase.h"
-#include "minwindef.h"
-#include "synchapi.h"
-#include "vcruntime.h"
-#include "winbase.h"
+// clang-format off
+#include <detours.h>
 #include <SokuLib.hpp>
 #include <chrono>
 #include <cstdint>
+#include <d3d9.h>
 #include <iostream>
+#include <mutex>
 #include <shared_mutex>
+#include <shlwapi.h>
 #include <string.h>
+#include <thread>
 #include <unordered_map>
 #include <vector>
-//
+// clang-format on
 #include "d3d9ex.hpp"
 #include "myassert.h"
 
@@ -40,80 +29,13 @@ extern "C" __declspec(dllexport) bool CheckVersion(const BYTE hash[16]) {
 static bool useOriginalLock = false;
 static bool testing = false;
 static bool d3d9ex = false;
-static HANDLE afterPresentEvent;
+static HANDLE afterPresentingEvent;
 static std::mutex swapChainMutex;
 // static std::chrono::system_clock::time_point beforePresentTime;
-UINT addedPresentDurationInMs = 0;
-static int __stdcall BeforePresenting(LPCRITICAL_SECTION originalLock) {
-  if (MyIDirect3DDevice9Ex::IsOccluded()) {
-    // std::cout << "Pause presenting!" << std::endl;
-    return 0;
-  }
-  // std::cout << "Before presenting!" << std::endl;
-  if (useOriginalLock)
-    EnterCriticalSection(originalLock);
-  else
-    swapChainMutex.lock();
-  if (addedPresentDurationInMs)
-    switch (SokuLib::sceneId) {
-    case SokuLib::SCENE_BATTLECL:
-    case SokuLib::SCENE_BATTLESV:
-    case SokuLib::SCENE_BATTLE:
-    case SokuLib::SCENE_BATTLEWATCH:
-      std::this_thread::sleep_for(
-          std::chrono::milliseconds(addedPresentDurationInMs));
-    default:;
-    }
-  // beforePresentTime = std::chrono::system_clock::now();
-  return 1;
-}
-
+static std::chrono::system_clock::time_point presentTime;
+static std::chrono::system_clock::duration presentDuration;
+static UINT addedPresentDurationInMs = 0;
 unsigned int delayPerFrameInLoading = 0;
-static void __stdcall AfterPresenting(LPCRITICAL_SECTION originalLock) {
-  // std::cout << "After presenting!" << std::endl;
-  bool *const toPresent = (bool *)0x00896b76;
-  unsigned int delay;
-  switch (SokuLib::sceneId) {
-  case SokuLib::SCENE_LOGO:
-  case SokuLib::SCENE_LOADING:
-  case SokuLib::SCENE_LOADINGCL:
-  case SokuLib::SCENE_LOADINGSV:
-  case SokuLib::SCENE_LOADINGWATCH:
-    delay = delayPerFrameInLoading;
-    break;
-  default:;
-    delay = 0;
-  }
-  if (delay == 0)
-    *toPresent = false;
-  if (useOriginalLock)
-    LeaveCriticalSection(originalLock);
-  // auto diff = std::chrono::system_clock::now() - beforePresentTime;
-  // if (diff > std::chrono::milliseconds(17)) {
-  //   std::cout << "present time:" << diff / std::chrono::milliseconds(1)
-  //             << std::endl;
-  // }
-  else
-    swapChainMutex.unlock();
-  if (delay != 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-    if (useOriginalLock)
-      EnterCriticalSection(originalLock);
-    *toPresent = false;
-    if (useOriginalLock)
-      LeaveCriticalSection(originalLock);
-    else
-      __asm sfence;
-  }
-  SetEvent(afterPresentEvent);
-}
-
-static void __stdcall AfterNotPresenting(LPCRITICAL_SECTION originalLock) {
-  if (useOriginalLock)
-    LeaveCriticalSection(originalLock);
-  else
-    swapChainMutex.unlock();
-}
 
 static void __stdcall InitializeTextureWithZero(char *pBits, unsigned width,
                                                 unsigned height,
@@ -142,7 +64,8 @@ static const DWORD renderingAddr = 0x00407fb4;
 static bool waitForPresent = false;
 static bool skipRendering = false;
 static const DWORD funWaitUntilTheNextFrame = 0x004195e0;
-static void _declspec(naked) WaitForPresentInMainLoop() {
+static HANDLE *const p_toPresentingEvent = (HANDLE *)0x0089fff0;
+static void _declspec(naked) WaitForPresentingInMainLoop() {
   __asm pushad;
   __asm mov edx, DWORD PTR[ebp - 0x11c];
   __asm push edx;
@@ -163,10 +86,12 @@ static void _declspec(naked) WaitForPresentInMainLoop() {
 }
 
 static DWORD maxInputDelayInMs = 12;
-static void __stdcall myWaitForSingleObject(HANDLE object, DWORD timeout) {
+static void __stdcall myWaitForSingleObject_WaitAlsoPresenting(HANDLE object,
+                                                               DWORD timeout) {
   // std::cout << "myWaitForSingleObject" << std::endl;
   if (waitForPresent) {
-    const HANDLE handles[2] = {afterPresentEvent, object};
+    SetEvent(*p_toPresentingEvent);
+    const HANDLE handles[2] = {afterPresentingEvent, object};
     int ret = WaitForMultipleObjects(2, handles, false, maxInputDelayInMs);
     switch (ret) {
     case WAIT_OBJECT_0 + 1:
@@ -201,8 +126,10 @@ static BOOL(__stdcall **oriSetEvent)(HANDLE event) = NULL;
 
 static BOOL __stdcall mySetEvent_AfterRender(HANDLE event) {
   // unset afterPresentEvent
-  WaitForSingleObject(afterPresentEvent, 0);
-  return (*oriSetEvent)(event);
+  WaitForSingleObject(afterPresentingEvent, 0);
+  // We have set event, so no need to set again.
+  // (*oriSetEvent)(event)
+  return true;
 }
 struct TextureSize {
   uint32_t width;
@@ -237,17 +164,19 @@ static void __fastcall myCHandleManager_GetSize(void *This, int _unused, int id,
     std::shared_lock<std::shared_mutex> lock(sizeMapMutex);
     auto result = sizeMap.find(id);
     if (result == sizeMap.end()) {
-      bool ingame = false;
-      switch (SokuLib::sceneId) {
-      case SokuLib::SCENE_BATTLECL:
-      case SokuLib::SCENE_BATTLESV:
-      case SokuLib::SCENE_BATTLE:
-      case SokuLib::SCENE_BATTLEWATCH:
-        ingame = true;
-      default:;
+      if (testing) {
+        bool ingame = false;
+        switch (SokuLib::sceneId) {
+        case SokuLib::SCENE_BATTLECL:
+        case SokuLib::SCENE_BATTLESV:
+        case SokuLib::SCENE_BATTLE:
+        case SokuLib::SCENE_BATTLEWATCH:
+          ingame = true;
+        default:;
+        }
+        if (ingame)
+          std::cout << "Warning: get size in battle!!!" << std::endl;
       }
-      if (ingame)
-        std::cout << "Warning: get size in battle!!!" << std::endl;
       // else
       //   std::cout << "Get size outsides battle" << std::endl;
       //
@@ -297,6 +226,120 @@ getsize:
   __asm jmp[retaddr_]
 }
 
+static void(__fastcall *ogDrawNumber)(void *cNumber, int _unused, int number,
+                                      float x, float y, int length,
+                                      bool neg) = 0;
+static void __fastcall myDrawNumber_DrawFps(void *cNumber, int _unused,
+                                            int number, float x, float y,
+                                            int length, bool neg) {
+  ogDrawNumber(cNumber, _unused, number, x, y, length, neg);
+  ogDrawNumber(cNumber, _unused,
+               *(uint32_t *)0x0089ffcc + *(uint32_t *)0x0089ffd0, x - 25.0, y,
+               0, false);
+}
+
+static int myPresentingInMainThread() {
+  SetEvent(*p_toPresentingEvent);
+  return 0;
+}
+
+static bool present_wait = false;
+static void (*ogSokuPresenting)() = nullptr;
+static void mySokuPresenting() {
+  if (*(bool *)0x0089ffbd) {
+    ogSokuPresenting();
+    return;
+  }
+  // rewrite presenting thread
+  static HANDLE toPresentingEvent = CreateEventA(0, false, false, nullptr);
+  *p_toPresentingEvent = toPresentingEvent;
+  static HANDLE timeoutEvent = toPresentingEvent;
+  static auto originalLock = (LPCRITICAL_SECTION)0x8a0e14;
+  bool *const toPresent = (bool *)0x00896b76;
+  while (*(bool *)0x0089ffdc) {
+    WaitForSingleObject(toPresentingEvent, INFINITE);
+    for (bool presented = false; !presented && *(bool *)0x0089ffdc;) {
+      if (!(*toPresent)) {
+        WaitForSingleObject(timeoutEvent, 1);
+        continue;
+      }
+
+      // pre-presenting
+      {
+        if (MyIDirect3DDevice9Ex::IsOccluded()) {
+          // std::cout << "Pause presenting!" << std::endl;
+          WaitForSingleObject(timeoutEvent, 1);
+          continue;
+        }
+        // std::cout << "Before presenting!" << std::endl;
+        if (useOriginalLock)
+          EnterCriticalSection(originalLock);
+        else
+          swapChainMutex.lock();
+        if (addedPresentDurationInMs)
+          switch (SokuLib::sceneId) {
+          case SokuLib::SCENE_BATTLECL:
+          case SokuLib::SCENE_BATTLESV:
+          case SokuLib::SCENE_BATTLE:
+          case SokuLib::SCENE_BATTLEWATCH:
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(addedPresentDurationInMs));
+          default:;
+          }
+        // beforePresentTime = std::chrono::system_clock::now();
+        if (testing)
+          presentTime = std::chrono::system_clock::now();
+      }
+
+      presented =
+          SUCCEEDED((*(IDirect3DSwapChain9 **)0x008a0e34)
+                        ->Present(NULL, NULL, NULL, NULL,
+                                  present_wait ? 0 : D3DPRESENT_DONOTWAIT));
+
+      // post-presenting
+      {
+        unsigned int delay = 0;
+        if (presented) {
+          (*(uint32_t *)0x0089ffd8)++; // frame counter
+          // std::cout << "After presenting!" << std::endl;
+          switch (SokuLib::sceneId) {
+          case SokuLib::SCENE_LOGO:
+          case SokuLib::SCENE_LOADING:
+          case SokuLib::SCENE_LOADINGCL:
+          case SokuLib::SCENE_LOADINGSV:
+          case SokuLib::SCENE_LOADINGWATCH:
+            delay = delayPerFrameInLoading;
+            break;
+          default:;
+            delay = 0;
+          }
+          if (delay == 0)
+            *toPresent = false;
+        }
+        if (useOriginalLock)
+          LeaveCriticalSection(originalLock);
+        else
+          swapChainMutex.unlock();
+        if (presented) {
+          if (delay != 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+            if (useOriginalLock)
+              EnterCriticalSection(originalLock);
+            *toPresent = false;
+            if (useOriginalLock)
+              LeaveCriticalSection(originalLock);
+            else
+              __asm sfence;
+          }
+          SetEvent(afterPresentingEvent);
+        } else
+          WaitForSingleObject(timeoutEvent, 1);
+      }
+    }
+  }
+  CloseHandle(toPresentingEvent);
+}
+
 // Called when the mod loader is ready to initialize this module.
 // All hooks should be placed here. It's also a good moment to load settings
 // from the ini.
@@ -315,6 +358,11 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
   GetModuleFileNameW(hMyModule, path, 1024);
   PathRemoveFileSpecW(path);
   PathAppendW(path, L"SokuDirectXOptimizations.ini");
+  d3d9exFlipex = GetPrivateProfileIntW(L"SokuDirectXOptimizations",
+                                       L"d3d9ex_flipex", 1, path);
+  d3d9exGpuThreadPriority = GetPrivateProfileIntW(
+      L"SokuDirectXOptimizations", L"d3d9ex_gpu_thread_priority", 7, path);
+  SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
   // antialias = GetPrivateProfileIntW(L"SokuDirectXOptimizations",
   //                                   L"anti-aliasing", 0, path);
   textureCheckPitch = GetPrivateProfileIntW(L"SokuDirectXOptimizations",
@@ -327,13 +375,12 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
                                           L"use_original_lock", 1, path);
   testing =
       GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"testing", 0, path);
-  d3d9ex = GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"use_d3d9ex", 1,
+  d3d9ex = GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"use_d3d9ex", 0,
                                  path);
   delayPerFrameInLoading = GetPrivateProfileIntW(
       L"SokuDirectXOptimizations", L"delay_per_frame_in_loading", 60, path);
-
   VirtualProtect((PVOID)TEXT_SECTION_OFFSET, TEXT_SECTION_SIZE,
-                 PAGE_EXECUTE_WRITECOPY, &old);
+                 PAGE_EXECUTE_READWRITE, &old);
 #define hook_memory(address, ...)                                              \
   do {                                                                         \
     unsigned char *address_ = (unsigned char *)(address);                      \
@@ -341,10 +388,9 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
     memcpy(address_, patch_, sizeof(patch_));                                  \
   } while (0)
 
-  // PresentParallelly: Skip rendering in main loop and leave it to the
-  // rendering thread.
-  // xor al, al; nop; nop; nop
-  hook_memory(0x00408022, {0x30, 0xc0, 0x90, 0x90, 0x90});
+  // PresentParallelly: Skip presenting in main loop and leave it to the
+  // presenting thread.
+  SokuLib::TamperNearCall(0x00408022, myPresentingInMainThread);
 
   // Improve the way Soku gets size of texture.
   hook_memory(0x00405245,
@@ -359,12 +405,13 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
   hook_memory(0x00405275, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
                            0x90, 0x90, 0x90});
 
-  if (GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"present_wait", 1,
-                            path)) {
-    // Make `IDirect3DSwapChain9::present` wait.
-    // push 0
-    hook_memory(0x004081d4, {0x6a, 0x00});
-  }
+  present_wait = GetPrivateProfileIntW(L"SokuDirectXOptimizations",
+                                       L"present_wait", 1, path);
+  ogSokuPresenting = SokuLib::TamperNearCall(0x004083fc, mySokuPresenting);
+
+  // Give presenting thread higher priority
+  // push 1
+  hook_memory(0x00407A39, {0x6a, 0x0f});
 
   UINT vsync =
       GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"vsync", 0, path);
@@ -375,9 +422,13 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
                 {0xbb, (unsigned char)vsync, 0x00, 0x00, 0x00, 0x90});
   }
 
-  // ShowPerceivedFPS
-  // mov eax, [0x0089ffd0]
-  hook_memory(0x0043e32f, {0xa1, 0xd0, 0xff, 0x89, 0x00});
+  // // ShowPerceivedFPS
+  // // mov eax, [0x0089ffd0]
+  // hook_memory(0x0043e32f, {0xa1, 0xd0, 0xff, 0x89, 0x00});
+  if (GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"show_fps", 1, path))
+    ogDrawNumber = SokuLib::TamperNearCall(0x0043e34e, myDrawNumber_DrawFps);
+  else
+    hook_memory(0x0043e32f, {0xa1, 0xd0, 0xff, 0x89, 0x00});
 
   /*
   // Fix initializing texture content (1)
@@ -411,29 +462,14 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
   */
 
   // allow main thread to wait for presenting the last frame.
-  SokuLib::TamperNearJmpOpr(0x00407fae + 1 /* jnz */, WaitForPresentInMainLoop);
-  static auto myWaitForSingleObject_ = myWaitForSingleObject;
+  SokuLib::TamperNearJmpOpr(0x00407fae + 1 /* jnz */,
+                            WaitForPresentingInMainLoop);
+  static auto myWaitForSingleObject_ = myWaitForSingleObject_WaitAlsoPresenting;
   SokuLib::TamperDword(0x00419687 + 2, &myWaitForSingleObject_);
 
   static auto mySetEvent_AfterRender_ = mySetEvent_AfterRender;
   oriSetEvent = SokuLib::TamperDword(0x0040804c + 2, &mySetEvent_AfterRender_);
 
-  // Replace the lock in presenting thread to a lock only for the swap chain.
-  // The reason why the old one is unnecessary here is that
-  // - Soku creates D3D9 Device with D3DCREATE_MULTITHREADED, which provides
-  // thread-safe itself, and
-  // - Soku uses a flag (*(char *)0x896b76) to prevent conflict between
-  // `present` and scene rendering in main loop.
-  // But we still need to lock the swap chain when resetting the device.
-  memset(
-      (void *)0x00408200, 0x90,
-      7); // Set *(bool *)0x00896b76 by ourselves instead of the vanilla code.
-  static auto AfterPresenting_ = AfterPresenting;
-  SokuLib::TamperDword(0x00408207 + 2, &AfterPresenting_);
-  static auto AfterNotPresenting_ = AfterNotPresenting;
-  SokuLib::TamperDword(0x004081ed + 2, &AfterNotPresenting_);
-  static auto BeforePresenting_ = BeforePresenting;
-  SokuLib::TamperDword(0x004081c3 + 2, &BeforePresenting_);
   static auto AlsoLockSwapChain_ = myEnterCriticalSection_AlsoLockSwapChain;
   SokuLib::TamperDword(0x00415156 + 2, &AlsoLockSwapChain_);
   static auto AlsoUnlockSwapChain_ = myLeaveCriticalSection_AlsoUnlockSwapChain;
@@ -442,11 +478,11 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
   if (d3d9ex) {
     SokuLib::TamperNearCall(0x00414ef0, Direct3DCreate9_to_EX);
     SokuLib::TamperNearJmp(0x0041501b, SetD3DPresentParamters);
-    // if (GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"hook_d3dx9", 0,
-    // path))
+    // if (GetPrivateProfileIntW(L"SokuDirectXOptimizations", L"hook_d3dx9",
+    // 0, path))
     // {
     //   DWORD old;
-    //   VirtualProtect((PVOID)0x008572b0, 4, PAGE_EXECUTE_WRITECOPY, &old);
+    //   VirtualProtect((PVOID)0x008572b0, 4, PAGE_EXECUTE_READWRITE, &old);
     //   ogD3DXCreateTexture =
     //       SokuLib::TamperDword(0x008572b0, myD3DXCreateTexture);
     //   VirtualProtect((PVOID)0x008572b0, 4, old, &old);
@@ -469,7 +505,7 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE hMyModule,
            NO_ERROR);
   DetourTransactionCommit();
   FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
-  afterPresentEvent = CreateEventA(NULL, false, 0, NULL);
+  afterPresentingEvent = CreateEventA(NULL, false, 0, NULL);
   return true;
 }
 
@@ -480,9 +516,9 @@ extern "C" int APIENTRY DllMain(HMODULE hModule, DWORD fdwReason,
 
 // New mod loader functions
 // Loading priority. Mods are loaded in order by ascending level of priority
-// (the highest first). When 2 mods define the same loading priority the loading
-// order is undefined.
-extern "C" __declspec(dllexport) int getPriority() { return 0; }
+// (the highest first). When 2 mods define the same loading priority the
+// loading order is undefined.
+extern "C" __declspec(dllexport) int getPriority() { return -1; }
 
 // Not yet implemented in the mod loader, subject to change
 // SokuModLoader::IValue **getConfig();

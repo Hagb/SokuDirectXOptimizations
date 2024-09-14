@@ -62,9 +62,15 @@ DebugRect::DebugRect(D3DLOCKED_RECT rect, D3DSURFACE_DESC decs)
     this->pixelSize = 2;
   myassert(pixelSize != 0);
 
-  for (int i = 0; i < sizeof(this->random) / sizeof(this->random[0]); i++)
+  size_t randomSize = fix ? 0 : sizeof(this->random);
+  for (int i = 0; i < randomSize / sizeof(this->random[0]); i++)
     this->random[i] = rand();
-  this->newRect.Pitch = decs.Width * this->pixelSize + sizeof(this->random);
+  if (decs.Width * this->pixelSize != originalRect.Pitch)
+    std::cout << "pitch unmatch! " << decs.Width * this->pixelSize
+              << " != " << originalRect.Pitch << std::endl;
+  else
+    std::cout << "pitch match. " << originalRect.Pitch << std::endl;
+  this->newRect.Pitch = decs.Width * this->pixelSize + randomSize;
   this->newRect.pBits = malloc(this->newRect.Pitch * decs.Height);
   for (int y = 0; y < decs.Height; y++) {
     memcpy((char *)this->newRect.pBits + y * this->newRect.Pitch,
@@ -72,7 +78,7 @@ DebugRect::DebugRect(D3DLOCKED_RECT rect, D3DSURFACE_DESC decs)
            decs.Width * this->pixelSize);
     memcpy((char *)this->newRect.pBits + y * this->newRect.Pitch +
                decs.Width * this->pixelSize,
-           this->random, sizeof(this->random));
+           this->random, randomSize);
   }
   //   } else {
   //     std::cerr << "Warning: unknown format!" << decs.Format << std::endl;
@@ -98,11 +104,13 @@ bool DebugRect::Check() {
   myassert(this->newRect.pBits != nullptr);
   if (this->newRect.pBits == this->originalRect.pBits)
     return true;
-  for (int y = 0; y < this->decs.Height; y++)
-    if (memcmp(this->random,
-               (char *)this->newRect.pBits + y * this->newRect.Pitch +
-                   this->decs.Width * this->pixelSize,
-               sizeof(this->random)) != 0)
-      return false;
+  size_t randomSize = fix ? 0 : sizeof(this->random);
+  if (randomSize != 0)
+    for (int y = 0; y < this->decs.Height; y++)
+      if (memcmp(this->random,
+                 (char *)this->newRect.pBits + y * this->newRect.Pitch +
+                     this->decs.Width * this->pixelSize,
+                 randomSize) != 0)
+        return false;
   return true;
 }
